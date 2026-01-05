@@ -6,9 +6,7 @@ __pycache__/
 venv/
 .env
 
-# Data
-data/raw/*.xlsx
-data/processed/*.json
+# Logs
 *.log
 
 # IDE
