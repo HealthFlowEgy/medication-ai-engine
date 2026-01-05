@@ -84,6 +84,51 @@ class EgyptianDrugDatabase:
         self.ingredient_index: Dict[str, List[int]] = defaultdict(list)
         self._loaded = False
     
+    def load_from_json(self, filepath: str) -> int:
+        """Load medications from processed JSON file"""
+        logger.info(f"Loading medications from JSON: {filepath}")
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        count = 0
+        for med_data in data.get('medications', []):
+            try:
+                # Convert dosage_form string to enum
+                dosage_form_str = med_data.get('dosage_form', 'other')
+                try:
+                    dosage_form = DosageForm(dosage_form_str)
+                except ValueError:
+                    dosage_form = DosageForm.OTHER
+                
+                med = Medication(
+                    id=med_data['id'],
+                    commercial_name=med_data['commercial_name'],
+                    generic_name=med_data.get('generic_name'),
+                    arabic_name=med_data.get('arabic_name'),
+                    active_ingredients=med_data.get('active_ingredients', []),
+                    strength=med_data.get('strength'),
+                    strength_value=med_data.get('strength_value'),
+                    strength_unit=med_data.get('strength_unit'),
+                    dosage_form=dosage_form,
+                    package_size=med_data.get('package_size'),
+                    manufacturer=med_data.get('manufacturer'),
+                    atc_code=med_data.get('atc_code'),
+                    eda_registration=med_data.get('eda_registration'),
+                    rxnorm_id=med_data.get('rxnorm_id'),
+                    drugbank_id=med_data.get('drugbank_id'),
+                    is_otc=med_data.get('is_otc', False),
+                    is_controlled=med_data.get('is_controlled', False),
+                )
+                self._process_medication(med)
+                count += 1
+            except Exception as e:
+                logger.warning(f"Failed to parse medication: {med_data.get('commercial_name', 'Unknown')} - {e}")
+        
+        self._loaded = True
+        logger.info(f"Loaded {count} medications from JSON")
+        return count
+    
     def load_from_excel(self, filepath: str) -> int:
         """Load medications from Egyptian database Excel file"""
         logger.info(f"Loading medications from {filepath}")

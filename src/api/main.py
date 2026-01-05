@@ -16,7 +16,7 @@ from src.core.models import Prescription, PrescriptionItem
 
 from src.nlp.arabic_processor import (
     ArabicDrugMatcher, ArabicPrescriptionParser, 
-    is_arabic, ArabicDrugDatabase
+    is_arabic, ArabicDrugDatabase, get_arabic_search
 )
 from src.api.healthflow_adapter import HealthFlowAdapter, get_healthflow_adapter
 
@@ -132,7 +132,26 @@ async def startup_event():
     global validation_service, db_initialized
     logger.info("Starting Egyptian AI Medication Validation Engine...")
     
-    # Initialize drug database (will be loaded separately via /admin/load-database)
+    # Try to auto-load from processed JSON file
+    json_paths = [
+        "/app/data/processed/medications.json",
+        "data/processed/medications.json",
+        "/data/medications.json"
+    ]
+    
+    drug_db = get_drug_database()
+    for json_path in json_paths:
+        try:
+            import os
+            if os.path.exists(json_path):
+                count = drug_db.load_from_json(json_path)
+                db_initialized = True
+                logger.info(f"Auto-loaded {count} medications from {json_path}")
+                break
+        except Exception as e:
+            logger.warning(f"Failed to auto-load from {json_path}: {e}")
+    
+    # Initialize validation service
     validation_service = get_validation_service()
     logger.info("Validation service initialized")
 
@@ -407,10 +426,16 @@ async def search_arabic(
         raise HTTPException(status_code=503, detail="Database not loaded")
     
     # Check if query contains Arabic
+    arabic_search = get_arabic_search()
     if is_arabic(q):
-        # Use Arabic-enhanced database
-        arabic_db = ArabicDrugDatabase(drug_db)
-        results = arabic_db.search_arabic(q, limit)
+        # Use Arabic-enhanced search
+        search_results = arabic_search.search(q, limit)
+        # Convert search results to medication objects
+        results = []
+        for sr in search_results:
+            med = drug_db.get_medication(sr.get('id', 0))
+            if med:
+                results.append(med)
     else:
         # Fall back to standard search
         results = drug_db.search(q, limit)
@@ -420,7 +445,7 @@ async def search_arabic(
             "id": med.id,
             "commercial_name": med.commercial_name,
             "generic_name": med.generic_name,
-            "arabic_name": ArabicDrugDatabase(drug_db).get_arabic_name(med.id),
+            "arabic_name": arabic_search.translate_drug_name(med.commercial_name),
             "dosage_form": med.dosage_form.value,
             "strength": med.strength
         }
