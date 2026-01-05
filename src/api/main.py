@@ -1,24 +1,24 @@
 """
 Egyptian AI Medication Validation Engine - FastAPI REST API
-Sprint 3-4: API Layer
+Sprint 3-4: API Layer with Authentication
 """
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
+import os
 
 from src.core.models import PatientContext, RenalImpairment, HepaticImpairment
-from src.core.drug_database import init_drug_database, get_drug_database
+from src.core.drug_database import init_drug_database, get_drug_database, init_drug_database_from_json
 from src.core.validation_service import get_validation_service, MedicationValidationService
 from src.core.models import Prescription, PrescriptionItem
-
-from src.nlp.arabic_processor import (
-    ArabicDrugMatcher, ArabicPrescriptionParser, 
-    is_arabic, ArabicDrugDatabase, get_arabic_search
+from src.api.auth import (
+    AuthResult, verify_api_key, require_api_key, require_admin_key,
+    generate_api_key, revoke_api_key, list_api_keys, APIKeyInfo
 )
-from src.api.healthflow_adapter import HealthFlowAdapter, get_healthflow_adapter
+from src.api.webhooks import get_webhook_manager, WebhookConfig, WebhookEventType
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -103,10 +103,31 @@ class HealthCheckResponse(BaseModel):
     timestamp: str
 
 
+class GenerateKeyRequest(BaseModel):
+    name: str
+    access_level: str = "standard"
+    rate_limit: int = 1000
+
+
 # Create FastAPI app
 app = FastAPI(
     title="Egyptian AI Medication Validation Engine",
-    description="AI-powered medication validation for drug interactions, dosing adjustments, and contraindication checking. Optimized for Egyptian medications (EDA registry).",
+    description="""AI-powered medication validation for drug interactions, dosing adjustments, and contraindication checking. 
+    Optimized for Egyptian medications (EDA registry).
+    
+    ## Authentication
+    
+    This API requires authentication via API key. Include your API key in one of these ways:
+    - Header: `X-API-Key: your-api-key`
+    - Query parameter: `?api_key=your-api-key`
+    
+    ## Access Levels
+    
+    - **admin**: Full access including key management
+    - **full**: Read and write access to all validation endpoints
+    - **standard**: Standard access for pharmacy integrations
+    - **readonly**: Read-only access for demo purposes
+    """,
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -132,44 +153,54 @@ async def startup_event():
     global validation_service, db_initialized
     logger.info("Starting Egyptian AI Medication Validation Engine...")
     
-    # Try to auto-load from processed JSON file
+    # Try to auto-load medication database from JSON
     json_paths = [
         "/app/data/processed/medications.json",
-        "data/processed/medications.json",
-        "/data/medications.json"
+        "/data/processed/medications.json",
+        "data/processed/medications.json"
     ]
     
-    drug_db = get_drug_database()
     for json_path in json_paths:
         try:
-            import os
             if os.path.exists(json_path):
-                count = drug_db.load_from_json(json_path)
+                init_drug_database_from_json(json_path)
                 db_initialized = True
-                logger.info(f"Auto-loaded {count} medications from {json_path}")
+                logger.info(f"✅ Auto-loaded medication database from {json_path}")
                 break
         except Exception as e:
-            logger.warning(f"Failed to auto-load from {json_path}: {e}")
+            logger.warning(f"Failed to load from {json_path}: {e}")
+    
+    if not db_initialized:
+        logger.warning("⚠️ Medication database not auto-loaded. Use /admin/load-database endpoint.")
     
     # Initialize validation service
     validation_service = get_validation_service()
     logger.info("Validation service initialized")
+    
+    # Log authentication mode
+    if os.getenv("DISABLE_AUTH", "false").lower() == "true":
+        logger.warning("⚠️ Authentication is DISABLED - Development mode")
+    else:
+        logger.info("✅ API Key authentication enabled")
 
+
+# ==================== Public Endpoints (No Auth Required) ====================
 
 @app.get("/", tags=["Health"])
 async def root():
-    """Root endpoint"""
+    """Root endpoint - public"""
     return {
         "name": "Egyptian AI Medication Validation Engine",
         "version": "1.0.0",
         "status": "operational",
-        "docs": "/docs"
+        "docs": "/docs",
+        "authentication": "API key required for most endpoints"
     }
 
 
 @app.get("/health", response_model=HealthCheckResponse, tags=["Health"])
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint - public"""
     drug_db = get_drug_database()
     return HealthCheckResponse(
         status="healthy" if db_initialized else "initializing",
@@ -179,13 +210,19 @@ async def health_check():
     )
 
 
+# ==================== Protected Endpoints (Auth Required) ====================
+
 @app.post("/admin/load-database", tags=["Admin"])
-async def load_database(filepath: str = "/data/cfgdrug.xlsx"):
-    """Load Egyptian drug database from Excel file"""
+async def load_database(
+    filepath: str = "/data/cfgdrug.xlsx",
+    auth: AuthResult = Depends(require_admin_key)
+):
+    """Load Egyptian drug database from Excel file - Admin only"""
     global db_initialized
     try:
         drug_db = init_drug_database(filepath)
         db_initialized = True
+        logger.info(f"Database loaded by: {auth.client_name}")
         return {
             "status": "success",
             "medications_loaded": len(drug_db.medications),
@@ -199,7 +236,8 @@ async def load_database(filepath: str = "/data/cfgdrug.xlsx"):
 @app.get("/medications/search", response_model=List[MedicationSearchResponse], tags=["Medications"])
 async def search_medications(
     q: str = Query(..., min_length=2, description="Search query"),
-    limit: int = Query(20, ge=1, le=100)
+    limit: int = Query(20, ge=1, le=100),
+    auth: AuthResult = Depends(require_api_key)
 ):
     """Search medications by name, generic name, or ingredient"""
     results = validation_service.search_medications(q, limit)
@@ -207,7 +245,10 @@ async def search_medications(
 
 
 @app.get("/medications/{medication_id}", tags=["Medications"])
-async def get_medication(medication_id: int):
+async def get_medication(
+    medication_id: int,
+    auth: AuthResult = Depends(require_api_key)
+):
     """Get detailed medication information"""
     info = validation_service.get_medication_info(medication_id)
     if not info:
@@ -216,7 +257,10 @@ async def get_medication(medication_id: int):
 
 
 @app.post("/validate/prescription", response_model=ValidationResponse, tags=["Validation"])
-async def validate_prescription(request: PrescriptionValidationRequest):
+async def validate_prescription(
+    request: PrescriptionValidationRequest,
+    auth: AuthResult = Depends(require_api_key)
+):
     """
     Validate a complete prescription for drug interactions and dosing adjustments.
     
@@ -266,6 +310,9 @@ async def validate_prescription(request: PrescriptionValidationRequest):
     # Validate
     result = validation_service.validate_prescription(prescription)
     
+    # Log validation
+    logger.info(f"Prescription validated by {auth.client_name}: {result.prescription_id}")
+    
     # Convert to response
     return ValidationResponse(
         is_valid=result.is_valid,
@@ -305,7 +352,10 @@ async def validate_prescription(request: PrescriptionValidationRequest):
 
 
 @app.post("/validate/quick", response_model=ValidationResponse, tags=["Validation"])
-async def quick_validate(request: QuickCheckRequest):
+async def quick_validate(
+    request: QuickCheckRequest,
+    auth: AuthResult = Depends(require_api_key)
+):
     """
     Quick validation of medication IDs without full prescription context.
     Useful for real-time checking during prescription entry.
@@ -359,7 +409,10 @@ async def quick_validate(request: QuickCheckRequest):
 
 
 @app.post("/validate/interaction", response_model=List[InteractionResponse], tags=["Validation"])
-async def check_interaction(request: InteractionCheckRequest):
+async def check_interaction(
+    request: InteractionCheckRequest,
+    auth: AuthResult = Depends(require_api_key)
+):
     """
     Check for interactions between two specific medications.
     Returns empty list if no interactions found.
@@ -382,7 +435,7 @@ async def check_interaction(request: InteractionCheckRequest):
 
 
 @app.get("/statistics", tags=["Admin"])
-async def get_statistics():
+async def get_statistics(auth: AuthResult = Depends(require_api_key)):
     """Get database and service statistics"""
     drug_db = get_drug_database()
     if not drug_db._loaded:
@@ -398,250 +451,223 @@ async def get_statistics():
     }
 
 
-# ============================================================================
-# ARABIC NLP ENDPOINTS (Sprint 6)
-# ============================================================================
+# ==================== API Key Management (Admin Only) ====================
 
-class ArabicSearchRequest(BaseModel):
-    query: str = Field(..., min_length=1, description="Arabic drug name to search")
-    limit: int = Field(20, ge=1, le=100)
+@app.post("/admin/keys/generate", tags=["API Keys"])
+async def generate_new_api_key(
+    request: GenerateKeyRequest,
+    auth: AuthResult = Depends(require_admin_key)
+):
+    """Generate a new API key - Admin only"""
+    new_key = generate_api_key(
+        name=request.name,
+        access_level=request.access_level,
+        rate_limit=request.rate_limit
+    )
+    logger.info(f"New API key generated by {auth.client_name} for: {request.name}")
+    return {
+        "api_key": new_key,
+        "name": request.name,
+        "access_level": request.access_level,
+        "rate_limit": request.rate_limit,
+        "message": "Store this key securely - it cannot be retrieved later"
+    }
 
 
-class ArabicPrescriptionRequest(BaseModel):
-    prescription_text: str = Field(..., description="Arabic prescription text to parse")
+@app.get("/admin/keys", tags=["API Keys"])
+async def list_all_api_keys(auth: AuthResult = Depends(require_admin_key)):
+    """List all API keys (masked) - Admin only"""
+    return {"keys": list_api_keys()}
 
 
-@app.get("/arabic/search", tags=["Arabic NLP"])
-async def search_arabic(
-    q: str = Query(..., min_length=1, description="Arabic drug name"),
-    limit: int = Query(20, ge=1, le=100)
+@app.delete("/admin/keys/{api_key}", tags=["API Keys"])
+async def revoke_api_key_endpoint(
+    api_key: str,
+    auth: AuthResult = Depends(require_admin_key)
+):
+    """Revoke an API key - Admin only"""
+    if revoke_api_key(api_key):
+        logger.info(f"API key revoked by {auth.client_name}: {api_key[:20]}...")
+        return {"status": "revoked", "key_prefix": api_key[:20] + "..."}
+    raise HTTPException(status_code=404, detail="API key not found")
+
+
+@app.get("/auth/verify", tags=["Authentication"])
+async def verify_authentication(auth: AuthResult = Depends(verify_api_key)):
+    """Verify API key and return access information"""
+    return {
+        "authenticated": auth.authenticated,
+        "access_level": auth.access_level,
+        "client_name": auth.client_name,
+        "error": auth.error
+    }
+
+
+# ==================== Webhook Management ====================
+
+class WebhookConfigRequest(BaseModel):
+    name: str
+    url: str
+    secret: str
+    events: List[str] = ["prescription.blocked", "interaction.major"]
+    active: bool = True
+
+
+class WebhookTestRequest(BaseModel):
+    webhook_id: str
+    test_payload: Optional[Dict[str, Any]] = None
+
+
+@app.post("/webhooks/register", tags=["Webhooks"])
+async def register_webhook(
+    request: WebhookConfigRequest,
+    auth: AuthResult = Depends(require_admin_key)
 ):
     """
-    Search medications using Arabic drug names.
-    Supports Arabic characters and translates to English equivalents.
-    """
-    drug_db = get_drug_database()
+    Register a new webhook endpoint for receiving alerts.
     
-    if not drug_db._loaded:
-        raise HTTPException(status_code=503, detail="Database not loaded")
-    
-    # Check if query contains Arabic
-    arabic_search = get_arabic_search()
-    if is_arabic(q):
-        # Use Arabic-enhanced search
-        search_results = arabic_search.search(q, limit)
-        # Convert search results to medication objects
-        results = []
-        for sr in search_results:
-            med = drug_db.get_medication(sr.get('id', 0))
-            if med:
-                results.append(med)
-    else:
-        # Fall back to standard search
-        results = drug_db.search(q, limit)
-    
-    return [
-        {
-            "id": med.id,
-            "commercial_name": med.commercial_name,
-            "generic_name": med.generic_name,
-            "arabic_name": arabic_search.translate_drug_name(med.commercial_name),
-            "dosage_form": med.dosage_form.value,
-            "strength": med.strength
-        }
-        for med in results
-    ]
-
-
-@app.post("/arabic/parse-prescription", tags=["Arabic NLP"])
-async def parse_arabic_prescription(request: ArabicPrescriptionRequest):
+    Events available:
+    - prescription.blocked: When a prescription is blocked due to critical issues
+    - prescription.warning: When a prescription has warnings
+    - interaction.major: When a major drug interaction is detected
+    - contraindication.detected: When a contraindication is found
+    - dosing.alert: When dosing adjustment is needed
     """
-    Parse Arabic prescription text and extract medications.
-    Returns structured data with English equivalents.
-    """
-    parser = ArabicPrescriptionParser()
-    result = parser.parse(request.prescription_text)
+    webhook_manager = get_webhook_manager()
+    
+    webhook_id = f"wh-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    config = WebhookConfig(
+        id=webhook_id,
+        name=request.name,
+        url=request.url,
+        secret=request.secret,
+        events=request.events,
+        active=request.active
+    )
+    
+    webhook_manager.register_webhook(config)
+    logger.info(f"Webhook registered by {auth.client_name}: {request.name}")
     
     return {
-        "original_text": result["original_text"],
-        "medications_found": len(result["medications"]),
-        "medications": result["medications"],
-        "instructions": result.get("instructions", [])
+        "status": "registered",
+        "webhook_id": webhook_id,
+        "name": request.name,
+        "url": request.url,
+        "events": request.events
     }
 
 
-@app.get("/arabic/translate/{drug_name}", tags=["Arabic NLP"])
-async def translate_drug(drug_name: str, to_arabic: bool = True):
-    """
-    Translate drug name between Arabic and English.
+@app.get("/webhooks", tags=["Webhooks"])
+async def list_webhooks(auth: AuthResult = Depends(require_admin_key)):
+    """List all registered webhooks"""
+    webhook_manager = get_webhook_manager()
+    return {"webhooks": webhook_manager.list_webhooks()}
+
+
+@app.delete("/webhooks/{webhook_id}", tags=["Webhooks"])
+async def delete_webhook(
+    webhook_id: str,
+    auth: AuthResult = Depends(require_admin_key)
+):
+    """Delete a webhook configuration"""
+    webhook_manager = get_webhook_manager()
     
-    Args:
-        drug_name: Drug name to translate
-        to_arabic: If true, translate English to Arabic. Otherwise Arabic to English.
-    """
-    from src.nlp.arabic_processor import translate_drug_name
-    
-    translation = translate_drug_name(drug_name, to_arabic=to_arabic)
-    
-    if translation:
-        return {
-            "input": drug_name,
-            "translation": translation,
-            "direction": "en_to_ar" if to_arabic else "ar_to_en"
-        }
-    else:
-        return {
-            "input": drug_name,
-            "translation": None,
-            "error": "Translation not found"
-        }
+    if webhook_manager.delete_webhook(webhook_id):
+        return {"status": "deleted", "webhook_id": webhook_id}
+    raise HTTPException(status_code=404, detail="Webhook not found")
 
 
-# ============================================================================
-# HEALTHFLOW INTEGRATION ENDPOINTS (Sprint 5)
-# ============================================================================
-
-class HealthFlowWebhookConfig(BaseModel):
-    webhook_url: str = Field(..., description="URL to send validation alerts")
-    api_key: Optional[str] = Field(None, description="Optional API key for webhook auth")
-    alert_on_major: bool = Field(True, description="Send alerts for MAJOR interactions")
-    alert_on_contraindicated: bool = Field(True, description="Send alerts for contraindicated meds")
-
-
-@app.post("/healthflow/validate", tags=["HealthFlow Integration"])
-async def healthflow_validate(request: dict):
-    """
-    Validate prescription in HealthFlow format.
-    
-    This endpoint accepts the HealthFlow Unified System prescription format
-    and returns validation results in HealthFlow-compatible format.
-    """
-    adapter = get_healthflow_adapter()
-    
-    try:
-        result = adapter.validate_from_json(request)
-        return result
-    except Exception as e:
-        logger.error(f"HealthFlow validation error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/healthflow/webhook/configure", tags=["HealthFlow Integration"])
-async def configure_healthflow_webhook(config: HealthFlowWebhookConfig):
-    """
-    Configure webhook for HealthFlow alerts.
-    
-    When prescriptions with MAJOR interactions or contraindicated medications
-    are detected, alerts will be sent to the configured webhook URL.
-    """
-    # In production, this would persist to database
-    return {
-        "status": "configured",
-        "webhook_url": config.webhook_url,
-        "alert_on_major": config.alert_on_major,
-        "alert_on_contraindicated": config.alert_on_contraindicated
-    }
-
-
-@app.get("/healthflow/status", tags=["HealthFlow Integration"])
-async def healthflow_status():
-    """Get HealthFlow integration status"""
-    return {
-        "integration_enabled": True,
-        "api_version": "1.0.0",
-        "supported_formats": ["healthflow_v1", "fhir_r4"],
-        "features": {
-            "ddi_detection": True,
-            "dosing_adjustment": True,
-            "arabic_support": True,
-            "webhook_alerts": True
-        }
-    }
-
-
-# ==================== Arabic NLP Endpoints ====================
-
-@app.post("/arabic/parse", tags=["Arabic NLP"])
-async def parse_arabic_prescription(text: str):
-    """
-    Parse Arabic prescription text into structured data.
-    
-    Extracts medication names, doses, frequencies, and routes from
-    Arabic prescription text.
-    """
-    from src.nlp.arabic_processor import get_arabic_parser
-    
-    parser = get_arabic_parser()
-    results = parser.parse_prescription(text)
-    
-    return {
-        "parsed_items": [
-            {
-                "original_text": r.original_text,
-                "medication_arabic": r.medication_name_ar,
-                "medication_english": r.medication_name_en,
-                "dose": f"{r.dose_value} {r.dose_unit}" if r.dose_value else None,
-                "form": r.dosage_form,
-                "frequency": r.frequency,
-                "route": r.route,
-                "confidence": r.confidence
-            }
-            for r in results
-        ],
-        "total_items": len(results)
-    }
-
-
-@app.get("/arabic/search", tags=["Arabic NLP"])
-async def search_arabic_medications(
-    q: str = Query(..., min_length=2, description="Arabic or English search query"),
-    limit: int = Query(10, ge=1, le=50)
+@app.post("/webhooks/test", tags=["Webhooks"])
+async def test_webhook(
+    request: WebhookTestRequest,
+    background_tasks: BackgroundTasks,
+    auth: AuthResult = Depends(require_admin_key)
 ):
     """
-    Search medications in Arabic or English.
-    
-    Supports Arabic drug names like 'باراسيتامول' and returns
-    both Arabic and English names.
+    Send a test webhook to verify configuration.
+    The test payload will be sent asynchronously.
     """
-    from src.nlp.arabic_processor import get_arabic_search
+    webhook_manager = get_webhook_manager()
     
-    search = get_arabic_search()
-    results = search.search(q, limit)
+    if request.webhook_id not in webhook_manager.webhooks:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    
+    test_payload = request.test_payload or {
+        "prescription_id": "TEST-RX-001",
+        "patient_id": "TEST-PATIENT",
+        "status": "BLOCKED",
+        "reason": "Test webhook - Major drug interaction detected",
+        "test": True
+    }
+    
+    async def send_test():
+        webhook = webhook_manager.webhooks[request.webhook_id]
+        await webhook_manager.send_webhook(
+            webhook,
+            "test.webhook",
+            test_payload
+        )
+    
+    background_tasks.add_task(send_test)
     
     return {
-        "query": q,
-        "results": results,
-        "count": len(results)
+        "status": "test_queued",
+        "webhook_id": request.webhook_id,
+        "message": "Test webhook will be sent shortly"
     }
 
 
-@app.get("/arabic/translate", tags=["Arabic NLP"])
-async def translate_drug_name(name: str):
-    """
-    Translate drug name between Arabic and English.
-    """
-    from src.nlp.arabic_processor import get_arabic_search, ArabicTextProcessor
+@app.get("/webhooks/deliveries", tags=["Webhooks"])
+async def get_webhook_deliveries(
+    webhook_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    auth: AuthResult = Depends(require_admin_key)
+):
+    """Get webhook delivery history with optional filters"""
+    webhook_manager = get_webhook_manager()
     
-    search = get_arabic_search()
-    
-    is_arabic = ArabicTextProcessor.is_arabic(name)
-    translation = search.translate_drug_name(name)
+    deliveries = webhook_manager.get_delivery_history(
+        webhook_id=webhook_id,
+        event_type=event_type,
+        status=status,
+        limit=limit
+    )
     
     return {
-        "input": name,
-        "input_language": "arabic" if is_arabic else "english",
-        "translation": translation,
-        "output_language": "english" if is_arabic else "arabic"
+        "total": len(deliveries),
+        "deliveries": deliveries
     }
 
 
-# Include HealthFlow integration routes
-try:
-    from src.api.healthflow_routes import router as healthflow_router
-    app.include_router(healthflow_router)
-    logger.info("HealthFlow integration routes loaded")
-except ImportError as e:
-    logger.warning(f"HealthFlow routes not available: {e}")
+@app.put("/webhooks/{webhook_id}", tags=["Webhooks"])
+async def update_webhook(
+    webhook_id: str,
+    request: WebhookConfigRequest,
+    auth: AuthResult = Depends(require_admin_key)
+):
+    """Update an existing webhook configuration"""
+    webhook_manager = get_webhook_manager()
+    
+    updates = {
+        "name": request.name,
+        "url": request.url,
+        "secret": request.secret,
+        "events": request.events,
+        "active": request.active
+    }
+    
+    updated = webhook_manager.update_webhook(webhook_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    
+    return {
+        "status": "updated",
+        "webhook_id": webhook_id,
+        "name": request.name
+    }
 
 
 # Main entry point for running directly

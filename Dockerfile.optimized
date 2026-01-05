@@ -1,0 +1,51 @@
+# Egyptian AI Medication Validation Engine
+# Optimized Dockerfile with smaller layers for reliable push
+FROM python:3.11-slim as base
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Stage 1: Install core dependencies
+FROM base as core-deps
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
+
+# Stage 2: Install ML dependencies separately
+FROM core-deps as ml-deps
+RUN pip install --no-cache-dir torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir transformers==4.36.2
+RUN pip install --no-cache-dir scikit-learn==1.4.0 scipy==1.12.0
+
+# Stage 3: Final image
+FROM ml-deps as final
+
+# Copy application code
+COPY . .
+
+# Create data directory
+RUN mkdir -p /data /app/models
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /data
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the application
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

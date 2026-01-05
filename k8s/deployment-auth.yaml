@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medication-api
+  namespace: medication-ai
+  labels:
+    app: medication-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: medication-api
+  template:
+    metadata:
+      labels:
+        app: medication-api
+    spec:
+      imagePullSecrets:
+        - name: healthflow-registry
+      containers:
+        - name: medication-api
+          image: registry.digitalocean.com/healthflow-registry/medication-ai-engine:v1.1.3-lite
+          ports:
+            - containerPort: 8000
+          env:
+            - name: PYTHONPATH
+              value: "/app"
+            - name: MASTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: medication-api-secrets
+                  key: master-api-key
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: medication-api-secrets
+                  key: jwt-secret
+          volumeMounts:
+            - name: auth-code
+              mountPath: /app/src/api/auth.py
+              subPath: auth.py
+            - name: main-code
+              mountPath: /app/src/api/main.py
+              subPath: main.py
+            - name: db-code
+              mountPath: /app/src/core/drug_database.py
+              subPath: drug_database.py
+            - name: webhooks-code
+              mountPath: /app/src/api/webhooks.py
+              subPath: webhooks.py
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: auth-code
+          configMap:
+            name: medication-auth-code
+        - name: main-code
+          configMap:
+            name: medication-main-code
+        - name: db-code
+          configMap:
+            name: medication-db-code
+        - name: webhooks-code
+          configMap:
+            name: medication-webhooks-code
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: medication-api-secrets
+  namespace: medication-ai
+type: Opaque
+stringData:
+  master-api-key: "hf-med-api-2026-master-key"
+  jwt-secret: "healthflow-medication-engine-jwt-secret-2026"

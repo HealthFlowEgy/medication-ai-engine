@@ -47,25 +47,6 @@ class EgyptianDrugDatabase:
         "ventolin": "salbutamol",
         "seretide": "fluticasone/salmeterol",
         "symbicort": "budesonide/formoterol",
-        "klacid": "clarithromycin",
-        "ciprobay": "ciprofloxacin",
-        "tavanic": "levofloxacin",
-        "zocor": "simvastatin",
-        "crestor": "rosuvastatin",
-        "cordarone": "amiodarone",
-        "zestril": "lisinopril",
-        "tritace": "ramipril",
-        "aldactone": "spironolactone",
-        "cipralex": "escitalopram",
-        "prozac": "fluoxetine",
-        "xanax": "alprazolam",
-        "tegretol": "carbamazepine",
-        "neurontin": "gabapentin",
-        "amaryl": "glimepiride",
-        "daonil": "glyburide",
-        "diflucan": "fluconazole",
-        "sporanox": "itraconazole",
-        "motilium": "domperidone",
     }
     
     # High-alert medications requiring special attention
@@ -83,51 +64,6 @@ class EgyptianDrugDatabase:
         self.generic_index: Dict[str, List[int]] = defaultdict(list)
         self.ingredient_index: Dict[str, List[int]] = defaultdict(list)
         self._loaded = False
-    
-    def load_from_json(self, filepath: str) -> int:
-        """Load medications from processed JSON file"""
-        logger.info(f"Loading medications from JSON: {filepath}")
-        
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        count = 0
-        for med_data in data.get('medications', []):
-            try:
-                # Convert dosage_form string to enum
-                dosage_form_str = med_data.get('dosage_form', 'other')
-                try:
-                    dosage_form = DosageForm(dosage_form_str)
-                except ValueError:
-                    dosage_form = DosageForm.OTHER
-                
-                med = Medication(
-                    id=med_data['id'],
-                    commercial_name=med_data['commercial_name'],
-                    generic_name=med_data.get('generic_name'),
-                    arabic_name=med_data.get('arabic_name'),
-                    active_ingredients=med_data.get('active_ingredients', []),
-                    strength=med_data.get('strength'),
-                    strength_value=med_data.get('strength_value'),
-                    strength_unit=med_data.get('strength_unit'),
-                    dosage_form=dosage_form,
-                    package_size=med_data.get('package_size'),
-                    manufacturer=med_data.get('manufacturer'),
-                    atc_code=med_data.get('atc_code'),
-                    eda_registration=med_data.get('eda_registration'),
-                    rxnorm_id=med_data.get('rxnorm_id'),
-                    drugbank_id=med_data.get('drugbank_id'),
-                    is_otc=med_data.get('is_otc', False),
-                    is_controlled=med_data.get('is_controlled', False),
-                )
-                self._process_medication(med)
-                count += 1
-            except Exception as e:
-                logger.warning(f"Failed to parse medication: {med_data.get('commercial_name', 'Unknown')} - {e}")
-        
-        self._loaded = True
-        logger.info(f"Loaded {count} medications from JSON")
-        return count
     
     def load_from_excel(self, filepath: str) -> int:
         """Load medications from Egyptian database Excel file"""
@@ -338,4 +274,41 @@ def init_drug_database(excel_path: str) -> EgyptianDrugDatabase:
     global _drug_db
     _drug_db = EgyptianDrugDatabase()
     _drug_db.load_from_excel(excel_path)
+    return _drug_db
+
+
+def init_drug_database_from_json(json_path: str) -> EgyptianDrugDatabase:
+    """Initialize drug database from JSON file"""
+    global _drug_db
+    _drug_db = EgyptianDrugDatabase()
+    
+    logger.info(f"Loading medications from JSON: {json_path}")
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    from datetime import datetime
+    
+    for med_data in data.get('medications', []):
+        try:
+            # Convert string dates back to datetime
+            if isinstance(med_data.get('created_at'), str):
+                med_data['created_at'] = datetime.fromisoformat(med_data['created_at'])
+            if isinstance(med_data.get('updated_at'), str):
+                med_data['updated_at'] = datetime.fromisoformat(med_data['updated_at'])
+            
+            # Convert dosage_form string to enum
+            if isinstance(med_data.get('dosage_form'), str):
+                try:
+                    med_data['dosage_form'] = DosageForm(med_data['dosage_form'])
+                except:
+                    med_data['dosage_form'] = DosageForm.OTHER
+            
+            med = Medication(**med_data)
+            _drug_db._process_medication(med)
+        except Exception as e:
+            logger.warning(f"Failed to load medication: {med_data.get('commercial_name', 'Unknown')} - {e}")
+    
+    _drug_db._loaded = True
+    logger.info(f"Loaded {len(_drug_db.medications)} medications from JSON")
     return _drug_db

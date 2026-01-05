@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: medication-api-ingress
+  namespace: medication-ai
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - ai-engine.healthflow.tech
+    secretName: medication-api-tls
+  rules:
+  - host: ai-engine.healthflow.tech
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: medication-api-service
+            port:
+              number: 80
