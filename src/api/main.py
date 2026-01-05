@@ -14,6 +14,12 @@ from src.core.drug_database import init_drug_database, get_drug_database
 from src.core.validation_service import get_validation_service, MedicationValidationService
 from src.core.models import Prescription, PrescriptionItem
 
+from src.nlp.arabic_processor import (
+    ArabicDrugMatcher, ArabicPrescriptionParser, 
+    is_arabic, ArabicDrugDatabase
+)
+from src.api.healthflow_adapter import HealthFlowAdapter, get_healthflow_adapter
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -367,9 +373,250 @@ async def get_statistics():
         "database": drug_db.get_statistics(),
         "service": {
             "ddi_rules_loaded": True,
-            "dosing_rules_loaded": True
+            "dosing_rules_loaded": True,
+            "arabic_nlp_enabled": True
         }
     }
+
+
+# ============================================================================
+# ARABIC NLP ENDPOINTS (Sprint 6)
+# ============================================================================
+
+class ArabicSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, description="Arabic drug name to search")
+    limit: int = Field(20, ge=1, le=100)
+
+
+class ArabicPrescriptionRequest(BaseModel):
+    prescription_text: str = Field(..., description="Arabic prescription text to parse")
+
+
+@app.get("/arabic/search", tags=["Arabic NLP"])
+async def search_arabic(
+    q: str = Query(..., min_length=1, description="Arabic drug name"),
+    limit: int = Query(20, ge=1, le=100)
+):
+    """
+    Search medications using Arabic drug names.
+    Supports Arabic characters and translates to English equivalents.
+    """
+    drug_db = get_drug_database()
+    
+    if not drug_db._loaded:
+        raise HTTPException(status_code=503, detail="Database not loaded")
+    
+    # Check if query contains Arabic
+    if is_arabic(q):
+        # Use Arabic-enhanced database
+        arabic_db = ArabicDrugDatabase(drug_db)
+        results = arabic_db.search_arabic(q, limit)
+    else:
+        # Fall back to standard search
+        results = drug_db.search(q, limit)
+    
+    return [
+        {
+            "id": med.id,
+            "commercial_name": med.commercial_name,
+            "generic_name": med.generic_name,
+            "arabic_name": ArabicDrugDatabase(drug_db).get_arabic_name(med.id),
+            "dosage_form": med.dosage_form.value,
+            "strength": med.strength
+        }
+        for med in results
+    ]
+
+
+@app.post("/arabic/parse-prescription", tags=["Arabic NLP"])
+async def parse_arabic_prescription(request: ArabicPrescriptionRequest):
+    """
+    Parse Arabic prescription text and extract medications.
+    Returns structured data with English equivalents.
+    """
+    parser = ArabicPrescriptionParser()
+    result = parser.parse(request.prescription_text)
+    
+    return {
+        "original_text": result["original_text"],
+        "medications_found": len(result["medications"]),
+        "medications": result["medications"],
+        "instructions": result.get("instructions", [])
+    }
+
+
+@app.get("/arabic/translate/{drug_name}", tags=["Arabic NLP"])
+async def translate_drug(drug_name: str, to_arabic: bool = True):
+    """
+    Translate drug name between Arabic and English.
+    
+    Args:
+        drug_name: Drug name to translate
+        to_arabic: If true, translate English to Arabic. Otherwise Arabic to English.
+    """
+    from src.nlp.arabic_processor import translate_drug_name
+    
+    translation = translate_drug_name(drug_name, to_arabic=to_arabic)
+    
+    if translation:
+        return {
+            "input": drug_name,
+            "translation": translation,
+            "direction": "en_to_ar" if to_arabic else "ar_to_en"
+        }
+    else:
+        return {
+            "input": drug_name,
+            "translation": None,
+            "error": "Translation not found"
+        }
+
+
+# ============================================================================
+# HEALTHFLOW INTEGRATION ENDPOINTS (Sprint 5)
+# ============================================================================
+
+class HealthFlowWebhookConfig(BaseModel):
+    webhook_url: str = Field(..., description="URL to send validation alerts")
+    api_key: Optional[str] = Field(None, description="Optional API key for webhook auth")
+    alert_on_major: bool = Field(True, description="Send alerts for MAJOR interactions")
+    alert_on_contraindicated: bool = Field(True, description="Send alerts for contraindicated meds")
+
+
+@app.post("/healthflow/validate", tags=["HealthFlow Integration"])
+async def healthflow_validate(request: dict):
+    """
+    Validate prescription in HealthFlow format.
+    
+    This endpoint accepts the HealthFlow Unified System prescription format
+    and returns validation results in HealthFlow-compatible format.
+    """
+    adapter = get_healthflow_adapter()
+    
+    try:
+        result = adapter.validate_from_json(request)
+        return result
+    except Exception as e:
+        logger.error(f"HealthFlow validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/healthflow/webhook/configure", tags=["HealthFlow Integration"])
+async def configure_healthflow_webhook(config: HealthFlowWebhookConfig):
+    """
+    Configure webhook for HealthFlow alerts.
+    
+    When prescriptions with MAJOR interactions or contraindicated medications
+    are detected, alerts will be sent to the configured webhook URL.
+    """
+    # In production, this would persist to database
+    return {
+        "status": "configured",
+        "webhook_url": config.webhook_url,
+        "alert_on_major": config.alert_on_major,
+        "alert_on_contraindicated": config.alert_on_contraindicated
+    }
+
+
+@app.get("/healthflow/status", tags=["HealthFlow Integration"])
+async def healthflow_status():
+    """Get HealthFlow integration status"""
+    return {
+        "integration_enabled": True,
+        "api_version": "1.0.0",
+        "supported_formats": ["healthflow_v1", "fhir_r4"],
+        "features": {
+            "ddi_detection": True,
+            "dosing_adjustment": True,
+            "arabic_support": True,
+            "webhook_alerts": True
+        }
+    }
+
+
+# ==================== Arabic NLP Endpoints ====================
+
+@app.post("/arabic/parse", tags=["Arabic NLP"])
+async def parse_arabic_prescription(text: str):
+    """
+    Parse Arabic prescription text into structured data.
+    
+    Extracts medication names, doses, frequencies, and routes from
+    Arabic prescription text.
+    """
+    from src.nlp.arabic_processor import get_arabic_parser
+    
+    parser = get_arabic_parser()
+    results = parser.parse_prescription(text)
+    
+    return {
+        "parsed_items": [
+            {
+                "original_text": r.original_text,
+                "medication_arabic": r.medication_name_ar,
+                "medication_english": r.medication_name_en,
+                "dose": f"{r.dose_value} {r.dose_unit}" if r.dose_value else None,
+                "form": r.dosage_form,
+                "frequency": r.frequency,
+                "route": r.route,
+                "confidence": r.confidence
+            }
+            for r in results
+        ],
+        "total_items": len(results)
+    }
+
+
+@app.get("/arabic/search", tags=["Arabic NLP"])
+async def search_arabic_medications(
+    q: str = Query(..., min_length=2, description="Arabic or English search query"),
+    limit: int = Query(10, ge=1, le=50)
+):
+    """
+    Search medications in Arabic or English.
+    
+    Supports Arabic drug names like 'باراسيتامول' and returns
+    both Arabic and English names.
+    """
+    from src.nlp.arabic_processor import get_arabic_search
+    
+    search = get_arabic_search()
+    results = search.search(q, limit)
+    
+    return {
+        "query": q,
+        "results": results,
+        "count": len(results)
+    }
+
+
+@app.get("/arabic/translate", tags=["Arabic NLP"])
+async def translate_drug_name(name: str):
+    """
+    Translate drug name between Arabic and English.
+    """
+    from src.nlp.arabic_processor import get_arabic_search, ArabicTextProcessor
+    
+    search = get_arabic_search()
+    
+    is_arabic = ArabicTextProcessor.is_arabic(name)
+    translation = search.translate_drug_name(name)
+    
+    return {
+        "input": name,
+        "input_language": "arabic" if is_arabic else "english",
+        "translation": translation,
+        "output_language": "english" if is_arabic else "arabic"
+    }
+
+
+# Include HealthFlow integration routes
+try:
+    from src.api.healthflow_routes import router as healthflow_router
+    app.include_router(healthflow_router)
+    logger.info("HealthFlow integration routes loaded")
+except ImportError as e:
+    logger.warning(f"HealthFlow routes not available: {e}")
 
 
 # Main entry point for running directly

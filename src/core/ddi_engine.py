@@ -43,16 +43,28 @@ CRITICAL_DDI_RULES = [
      "Additive hyperkalemia risk",
      "Monitor potassium, especially in renal impairment."),
     
-    # QT prolongation combinations
+    # QT prolongation combinations - expanded
     ("amiodarone", "fluoroquinolone", DDISeverity.MAJOR,
      "Additive QT prolongation risk - risk of torsades de pointes",
      "Avoid combination. If unavoidable, monitor QTc and electrolytes."),
+    ("amiodarone", "ciprofloxacin", DDISeverity.MAJOR,
+     "Additive QT prolongation risk - risk of torsades de pointes",
+     "Avoid combination. If unavoidable, monitor QTc and electrolytes."),
+    ("amiodarone", "levofloxacin", DDISeverity.MAJOR,
+     "Additive QT prolongation risk - risk of torsades de pointes",
+     "Avoid combination. If unavoidable, monitor QTc and electrolytes."),
+    ("amiodarone", "moxifloxacin", DDISeverity.MAJOR,
+     "Additive QT prolongation risk - severe risk of torsades de pointes",
+     "Contraindicated combination. Use alternative antibiotic."),
     ("clarithromycin", "domperidone", DDISeverity.MAJOR,
      "QT prolongation risk",
      "Avoid combination. Use alternative antiemetic."),
     ("erythromycin", "cisapride", DDISeverity.MAJOR,
      "Severe QT prolongation - fatal arrhythmias reported",
      "Contraindicated combination."),
+    ("macrolide", "amiodarone", DDISeverity.MAJOR,
+     "Combined QT prolongation risk - torsades de pointes possible",
+     "Avoid combination if possible. Monitor QTc closely."),
     
     # Serotonin syndrome
     ("ssri", "tramadol", DDISeverity.MAJOR,
@@ -70,7 +82,7 @@ CRITICAL_DDI_RULES = [
      "Risk of lactic acidosis",
      "Hold metformin 48h before and after contrast. Resume after renal function confirmed stable."),
     
-    # Digoxin interactions
+    # Digoxin interactions - expanded
     ("digoxin", "amiodarone", DDISeverity.MAJOR,
      "Amiodarone increases digoxin levels by 70-100%",
      "Reduce digoxin dose by 50%. Monitor levels."),
@@ -80,9 +92,15 @@ CRITICAL_DDI_RULES = [
     ("digoxin", "clarithromycin", DDISeverity.MODERATE,
      "Macrolides increase digoxin levels via P-glycoprotein inhibition",
      "Monitor digoxin levels and for toxicity signs."),
+    ("digoxin", "macrolide", DDISeverity.MODERATE,
+     "Macrolides increase digoxin levels via P-glycoprotein inhibition",
+     "Monitor digoxin levels and for toxicity signs."),
     
-    # Statins
+    # Statins - expanded
     ("simvastatin", "clarithromycin", DDISeverity.MAJOR,
+     "Risk of rhabdomyolysis due to CYP3A4 inhibition",
+     "Use alternative statin (pravastatin, rosuvastatin) or antibiotic."),
+    ("simvastatin", "macrolide", DDISeverity.MAJOR,
      "Risk of rhabdomyolysis due to CYP3A4 inhibition",
      "Use alternative statin (pravastatin, rosuvastatin) or antibiotic."),
     ("simvastatin", "itraconazole", DDISeverity.MAJOR,
@@ -91,25 +109,49 @@ CRITICAL_DDI_RULES = [
     ("atorvastatin", "clarithromycin", DDISeverity.MODERATE,
      "Increased statin exposure",
      "Limit atorvastatin to 20mg daily. Monitor for myopathy."),
+    ("atorvastatin", "macrolide", DDISeverity.MODERATE,
+     "Increased statin exposure via CYP3A4 inhibition",
+     "Limit atorvastatin to 20mg daily. Monitor for myopathy."),
+    ("statin", "macrolide", DDISeverity.MODERATE,
+     "Risk of myopathy due to CYP3A4 inhibition (varies by statin)",
+     "Use pravastatin or rosuvastatin if possible. Monitor for muscle symptoms."),
     
     # Theophylline
     ("theophylline", "ciprofloxacin", DDISeverity.MAJOR,
      "Ciprofloxacin inhibits theophylline metabolism",
      "Reduce theophylline dose by 30-50%. Monitor levels."),
+    ("theophylline", "fluoroquinolone", DDISeverity.MAJOR,
+     "Fluoroquinolones inhibit theophylline metabolism",
+     "Reduce theophylline dose by 30-50%. Monitor levels."),
     ("theophylline", "erythromycin", DDISeverity.MODERATE,
      "Macrolides increase theophylline levels",
      "Monitor theophylline levels."),
+    ("theophylline", "macrolide", DDISeverity.MODERATE,
+     "Macrolides increase theophylline levels",
+     "Monitor theophylline levels."),
     
-    # Lithium
+    # Lithium - expanded
     ("lithium", "nsaid", DDISeverity.MAJOR,
+     "NSAIDs reduce lithium clearance, causing toxicity",
+     "Avoid if possible. If necessary, monitor lithium levels closely."),
+    ("lithium", "ibuprofen", DDISeverity.MAJOR,
+     "NSAIDs reduce lithium clearance, causing toxicity",
+     "Avoid if possible. If necessary, monitor lithium levels closely."),
+    ("lithium", "diclofenac", DDISeverity.MAJOR,
      "NSAIDs reduce lithium clearance, causing toxicity",
      "Avoid if possible. If necessary, monitor lithium levels closely."),
     ("lithium", "ace_inhibitor", DDISeverity.MAJOR,
      "ACE inhibitors reduce lithium clearance",
      "Monitor lithium levels. May need dose reduction."),
+    ("lithium", "lisinopril", DDISeverity.MAJOR,
+     "ACE inhibitors reduce lithium clearance",
+     "Monitor lithium levels. May need dose reduction."),
     ("lithium", "diuretic", DDISeverity.MODERATE,
      "Thiazides and loop diuretics can increase lithium levels",
      "Monitor lithium levels, especially when initiating diuretic."),
+    ("lithium", "furosemide", DDISeverity.MODERATE,
+     "Loop diuretics can increase lithium levels",
+     "Monitor lithium levels when initiating or changing diuretic."),
     
     # Methotrexate
     ("methotrexate", "nsaid", DDISeverity.MAJOR,
@@ -119,13 +161,22 @@ CRITICAL_DDI_RULES = [
      "Additive antifolate effects and reduced MTX clearance",
      "Avoid combination if possible. Monitor blood counts."),
     
-    # Opioids
+    # Opioids - expanded
     ("opioid", "benzodiazepine", DDISeverity.MAJOR,
      "Additive CNS and respiratory depression",
+     "Avoid combination if possible. Use lowest effective doses. Monitor closely."),
+    ("morphine", "benzodiazepine", DDISeverity.MAJOR,
+     "Additive CNS and respiratory depression - FDA black box warning",
+     "Avoid combination if possible. Use lowest effective doses. Monitor closely."),
+    ("fentanyl", "benzodiazepine", DDISeverity.MAJOR,
+     "Additive CNS and respiratory depression - FDA black box warning",
      "Avoid combination if possible. Use lowest effective doses. Monitor closely."),
     ("opioid", "maoi", DDISeverity.MAJOR,
      "Risk of serotonin syndrome and respiratory depression",
      "Avoid meperidine. Use other opioids with extreme caution."),
+    ("tramadol", "benzodiazepine", DDISeverity.MAJOR,
+     "Additive CNS depression and respiratory depression risk",
+     "Avoid combination if possible. Monitor closely."),
     
     # Antidiabetics
     ("sulfonylurea", "fluconazole", DDISeverity.MODERATE,
@@ -140,7 +191,8 @@ class DrugClassifier:
     DRUG_CLASSES = {
         "ace_inhibitor": [
             "lisinopril", "enalapril", "ramipril", "captopril", "perindopril",
-            "quinapril", "benazepril", "fosinopril", "moexipril", "trandolapril"
+            "quinapril", "benazepril", "fosinopril", "moexipril", "trandolapril",
+            "zestril", "tritace", "coversyl"
         ],
         "arb": [
             "losartan", "valsartan", "irbesartan", "candesartan", "olmesartan",
@@ -176,7 +228,8 @@ class DrugClassifier:
             "rasagiline"
         ],
         "sulfonylurea": [
-            "glipizide", "glyburide", "glimepiride", "glibenclamide", "gliclazide"
+            "glipizide", "glyburide", "glimepiride", "glibenclamide", "gliclazide",
+            "amaryl", "daonil"
         ],
         "potassium": [
             "potassium chloride", "potassium citrate", "potassium", "k-dur",
@@ -185,6 +238,21 @@ class DrugClassifier:
         "diuretic": [
             "furosemide", "hydrochlorothiazide", "chlorthalidone", "bumetanide",
             "torsemide", "metolazone", "lasix"
+        ],
+        "macrolide": [
+            "clarithromycin", "erythromycin", "azithromycin", "klacid", "zithromax"
+        ],
+        "amiodarone": [
+            "amiodarone", "cordarone"
+        ],
+        "digoxin": [
+            "digoxin", "lanoxin"
+        ],
+        "lithium": [
+            "lithium", "lithium carbonate", "lithobid", "eskalith"
+        ],
+        "theophylline": [
+            "theophylline", "aminophylline", "theo-dur"
         ],
     }
     
