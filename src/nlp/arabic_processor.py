@@ -542,3 +542,20 @@ def get_arabic_search() -> ArabicSearchEnhancer:
     if _arabic_search is None:
         _arabic_search = ArabicSearchEnhancer()
     return _arabic_search
+
+
+# Module-level convenience functions and aliases
+def is_arabic(text: str) -> bool:
+    """Check if text contains Arabic characters"""
+    return ArabicTextProcessor.is_arabic(text)
+
+
+def translate_drug_name(name: str) -> Optional[str]:
+    """Translate drug name between Arabic and English"""
+    search = get_arabic_search()
+    return search.translate_drug_name(name)
+
+
+# Aliases for backward compatibility
+ArabicDrugMatcher = ArabicSearchEnhancer
+ArabicDrugDatabase = ArabicSearchEnhancer

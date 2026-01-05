@@ -1,0 +1,137 @@
+# Egyptian AI Medication Validation Engine
+# Simplified Kubernetes Deployment for DigitalOcean
+# Initial deployment without external databases
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: medication-ai
+  labels:
+    app: medication-ai
+    project: healthflow
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: medication-ai-config
+  namespace: medication-ai
+data:
+  LOG_LEVEL: "INFO"
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  ENABLE_ARABIC_NLP: "true"
+  ENABLE_DDI_AI: "true"
+  ENABLE_DOSING_CALC: "true"
+  ENABLE_AUDIT_LOG: "true"
+  PYTHONPATH: "/app"
+
+---
+# Main API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medication-api
+  namespace: medication-ai
+  labels:
+    app: medication-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: medication-api
+  template:
+    metadata:
+      labels:
+        app: medication-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      imagePullSecrets:
+      - name: registry-healthflow-registry
+      containers:
+      - name: medication-api
+        image: registry.digitalocean.com/healthflow-registry/medication-ai-engine:v1.1.0-lite
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: medication-ai-config
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+
+---
+# API Service - LoadBalancer for external access
+apiVersion: v1
+kind: Service
+metadata:
+  name: medication-api-service
+  namespace: medication-ai
+  labels:
+    app: medication-api
+  annotations:
+    service.beta.kubernetes.io/do-loadbalancer-name: "medication-ai-lb"
+    service.beta.kubernetes.io/do-loadbalancer-protocol: "http"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-path: "/health"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-protocol: "http"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: medication-api
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: medication-api-hpa
+  namespace: medication-ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: medication-api
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
